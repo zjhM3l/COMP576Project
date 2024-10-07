@@ -43,19 +43,16 @@ from torchvision import datasets, transforms
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import os
-import warnings
-
-# Suppress OpenMP warning
-warnings.filterwarnings("ignore", message=".*libiomp5md.dll, but found libiomp5md.dll already initialized.*")
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 # Hyperparameters
-batch_size = 50
+batch_size = 64
 test_batch_size = 1000
 epochs = 5
-lr = 0.01
+lr = 0.005
 try_cuda = True
 seed = 1000
-logging_interval = 10
+logging_interval = 100
 
 # 1) setting up the logging
 # [inset-code: set up logging]
@@ -107,11 +104,38 @@ class Net(nn.Module):
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
 
-model = Net().to(device)
-optimizer = optim.Adam(model.parameters(), lr=lr)
+# Function to run training with different configurations
+def run_training_with_configurations(configurations):
+    for config in configurations:
+        activation, init_method, opt_algorithm, learning_rate = config
+        print(f"Running configuration: Activation={activation}, Initialization={init_method}, Optimizer={opt_algorithm}, LR={learning_rate}")
+
+        # Initialize model with selected activation function and initialization
+        model = Net().to(device)
+        for layer in model.modules():
+            if isinstance(layer, (nn.Conv2d, nn.Linear)):
+                if init_method == 'xavier':
+                    nn.init.xavier_uniform_(layer.weight)
+                elif init_method == 'he':
+                    nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+                else:
+                    nn.init.normal_(layer.weight, mean=0, std=0.01)
+
+        # Set optimizer
+        if opt_algorithm == 'adam':
+            optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        elif opt_algorithm == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+        elif opt_algorithm == 'adagrad':
+            optimizer = optim.Adagrad(model.parameters(), lr=learning_rate)
+
+        # Training loop
+        for epoch in range(1, epochs + 1):
+            train_epoch(model, optimizer, epoch, activation)
+            test_epoch(model, epoch)
 
 # Defining the test and training loops
-def train(epoch):
+def train_epoch(model, optimizer, epoch, activation):
     model.train()
     criterion = nn.CrossEntropyLoss()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -132,7 +156,7 @@ def train(epoch):
     for name, param in model.named_parameters():
         writer.add_histogram(name, param.clone().cpu().data.numpy(), epoch)
 
-def test(epoch):
+def test_epoch(model, epoch):
     model.eval()
     test_loss = 0
     correct = 0
@@ -148,14 +172,21 @@ def test(epoch):
     test_loss /= len(test_loader.dataset)
     accuracy = 100. * correct / len(test_loader.dataset)
     print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ' +
-          f'({accuracy:.0f}%)\n')
+          f'({accuracy:.2f}%)\n')
     writer.add_scalar('test_loss', test_loss, epoch)
     writer.add_scalar('test_accuracy', accuracy, epoch)
 
-# Training loop
-for epoch in range(1, epochs + 1):
-    train(epoch)
-    test(epoch)
+# Define different configurations to test
+configurations = [
+    # Running configuration: Activation=, Initialization=, Optimizer=, LR=
+    # ('relu', 'xavier', 'adam', 0.005),
+    # ('sigmoid', 'he', 'sgd', 0.01),
+    # ('tanh', 'xavier', 'adagrad', 0.01),
+    ('leaky_relu', 'he', 'adam', 0.005),
+]
+
+# Run training with different configurations
+run_training_with_configurations(configurations)
 
 writer.close()
 
@@ -165,7 +196,6 @@ writer.close()
 
 #seems to be working in firefox when not working in Google Chrome when running in Colab
 #https://stackoverflow.com/questions/64218755/getting-error-403-in-google-colab-with-tensorboard-with-firefox
-
 
 # %load_ext tensorboard
 # %tensorboard --logdir [dir]
