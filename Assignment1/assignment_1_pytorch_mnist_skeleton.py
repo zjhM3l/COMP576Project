@@ -40,133 +40,122 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
-
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import os
-from pathlib import Path
+import warnings
 
-batch_size = 64
+# Suppress OpenMP warning
+warnings.filterwarnings("ignore", message=".*libiomp5md.dll, but found libiomp5md.dll already initialized.*")
+
+# Hyperparameters
+batch_size = 50
 test_batch_size = 1000
-epochs = 10
+epochs = 5
 lr = 0.01
 try_cuda = True
 seed = 1000
-logging_interval = 10 # how many batches to wait before logging
-logging_dir = None
+logging_interval = 10
 
 # 1) setting up the logging
-[inset-code: set up logging]
+# [inset-code: set up logging]
+datetime_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+log_dir = f'runs/mnist_dcn_{datetime_str}'
+writer = SummaryWriter(log_dir)
 
-#deciding whether to send to the cpu or not if available
-if torch.cuda.is_available() and try_cuda:
-    cuda = True
-    torch.cuda.mnaual_seed(seed)
+# Deciding whether to send to the cpu or not if available
+cuda = torch.cuda.is_available() and try_cuda
+if cuda:
+    torch.cuda.manual_seed(seed)
 else:
-    cuda = False
     torch.manual_seed(seed)
 
+device = torch.device('cuda' if cuda else 'cpu')
+
 # Setting up data
-transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.01307,), (0.3081,))
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.1307,), (0.3081,))
 ])
 
-train_loader = [inset-code]
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('../data', train=True, download=True, transform=transform),
+    batch_size=batch_size, shuffle=True
+)
 
-test_loader = [inset-code]
+test_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('../data', train=False, transform=transform),
+    batch_size=test_batch_size, shuffle=False
+)
 
-# Defining Architecture,loss and optimizer
+# Defining Architecture, loss, and optimizer
 class Net(nn.Module):
     def __init__(self):
-
         super(Net, self).__init__()
-        self.conv1 = [inset-code]
-        self.conv2 = [inset-code]
-        self.conv2_drop = [inset-code]
-        self.fc1 = [inset-code]
-        self.fc2 = [inset-code]
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5)
+        self.fc1 = nn.Linear(1024, 1024)
+        self.fc2 = nn.Linear(1024, 10)
+        self.conv2_drop = nn.Dropout2d()
 
     def forward(self, x):
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+        x = x.view(-1, 1024)
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        x = self.fc2(x)
+        return F.log_softmax(x, dim=1)
 
-        x = [inset-code]
-        x = [inset-code]
-        x = [inset-code]
-        x = [inset-code]
-        x = [inset-code]
-        x = [inset-code]
-        x = F.softmax(x,dim=1)
+model = Net().to(device)
+optimizer = optim.Adam(model.parameters(), lr=lr)
 
-        return x
-
-[inset-code: instantiate model]
-
-optimizer = [inset-code: USE AN ADAM OPTIMIZER]
-
-
-# Defining the test and trainig loops
-eps=1e-13
-
+# Defining the test and training loops
 def train(epoch):
     model.train()
-
-    #criterion = nn.CrossEntropyLoss()
-    criterion = [inset-code]
-
+    criterion = nn.CrossEntropyLoss()
     for batch_idx, (data, target) in enumerate(train_loader):
-        if cuda:
-            data, target = data.cuda(), target.cuda()
-
-        optimizer.[inset-code]
-        output = [inset-code]
-        loss = criterion(torch.log(output+eps), target) # = sum_k(-t_k * log(y_k))
-        loss[inset-code]
-        optimizer[inset-code]
+        data, target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        output = model(data)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
 
         if batch_idx % logging_interval == 0:
-            [inset-code: print and log the performance]
+            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} ' +
+                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
+            n_iter = epoch * len(train_loader) + batch_idx
+            writer.add_scalar('training_loss', loss.item(), n_iter)
 
     # Log model parameters to TensorBoard at every epoch
     for name, param in model.named_parameters():
-        layer, attr = os.path.splitext(name)
-        attr = attr[1:]
-        writer.add_histogram(
-            f'{layer}/{attr}',
-            param.clone().cpu().data.numpy(),
-            n_iter)
-
-
+        writer.add_histogram(name, param.clone().cpu().data.numpy(), epoch)
 
 def test(epoch):
     model.eval()
     test_loss = 0
     correct = 0
-    #criterion = nn.CrossEntropyLoss()
-
-    #criterion = nn.CrossEntropyLoss(size_average = False)
-    criterion = nn.NLLLoss(size_average = False)
-
-    for data, target in test_loader:
-        if cuda:
-            data, target = data.cuda(), target.cuda()
-
-        output = model(data)
-
-        test_loss += criterion(torch.log(output+eps), target,).item() # sum up batch loss (later, averaged over all test samples)
-        pred = [inset-code] # get the index of the max log-probability
-        correct += [inset-code]
+    criterion = nn.CrossEntropyLoss(reduction='sum')
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            test_loss += criterion(output, target).item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
-    test_accuracy = 100. * correct / len(test_loader.dataset)
-    [inset-code: print the performance]
-
-    # Log test/loss and test/accuracy to TensorBoard at every epoch
-    n_iter = epoch * len(train_loader)
-    [inset-code: log the performance]
+    accuracy = 100. * correct / len(test_loader.dataset)
+    print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ' +
+          f'({accuracy:.0f}%)\n')
+    writer.add_scalar('test_loss', test_loss, epoch)
+    writer.add_scalar('test_accuracy', accuracy, epoch)
 
 # Training loop
-
-[inset-code: running test and training over epoch]
+for epoch in range(1, epochs + 1):
+    train(epoch)
+    test(epoch)
 
 writer.close()
 
