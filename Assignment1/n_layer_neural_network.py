@@ -2,6 +2,7 @@ __author__ = 'tan_nguyen'
 import numpy as np
 from sklearn import datasets
 import matplotlib.pyplot as plt
+from three_layer_neural_network import NeuralNetwork  # Import NeuralNetwork
 
 class Layer:
     """
@@ -46,7 +47,7 @@ class Layer:
         db = np.sum(delta, axis=0, keepdims=True)
         return delta, dW, db
 
-class DeepNeuralNetwork:
+class DeepNeuralNetwork(NeuralNetwork):
     """
     This class builds and trains a deep neural network with n layers.
     """
@@ -57,6 +58,7 @@ class DeepNeuralNetwork:
         :param reg_lambda: regularization coefficient
         :param seed: random seed
         '''
+        super().__init__(layer_dims[0], layer_dims[1], layer_dims[-1], actFun_type, reg_lambda, seed)
         self.layers = []
         self.reg_lambda = reg_lambda
         np.random.seed(seed)
