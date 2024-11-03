@@ -2,14 +2,14 @@
 """Assignment_2_Part_2_RNN_MNIST_vp1.ipynb
 Overall structure:
 
-1) Set Pytorch metada
+1) Set Pytorch metadata
 - seed
 - tensorflow output
 - whether to transfer to gpu (cuda)
 
 2) Import data
 - download data
-- create data loaders with batchsie, transforms, scaling
+- create data loaders with batch size, transforms, scaling
 
 3) Define Model architecture, loss and optimizer
 
@@ -45,30 +45,29 @@ import matplotlib.pyplot as plt
 batch_size = 64
 test_batch_size = 1000
 epochs = 10
-lr = 0.01
+lr = 0.001
 try_cuda = True
 seed = 1000
-logging_interval = 10 # how many batches to wait before logging
+logging_interval = 10  # how many batches to wait before logging
 logging_dir = None
 
-INPUT_SIZE = 28
+INPUT_SIZE = 28  # MNIST images are 28x28 pixels
 
-# 1) setting up the logging
+# Setting up the logging
 
 datetime_str = datetime.now().strftime('%b%d_%H-%M-%S')
 
 if logging_dir is None:
     runs_dir = Path("./") / Path(f"runs/")
-    runs_dir.mkdir(exist_ok = True)
+    runs_dir.mkdir(exist_ok=True)
 
     logging_dir = runs_dir / Path(f"{datetime_str}")
-
-    logging_dir.mkdir(exist_ok = True)
+    logging_dir.mkdir(exist_ok=True)
     logging_dir = str(logging_dir.absolute())
 
 writer = SummaryWriter(log_dir=logging_dir)
 
-#deciding whether to send to the cpu or not if available
+# Deciding whether to use CPU or GPU
 if torch.cuda.is_available() and try_cuda:
     cuda = True
     torch.cuda.manual_seed(seed)
@@ -79,86 +78,118 @@ else:
 """# Step 2: Data Setup"""
 
 # Setting up data
-transform=[insert-code: create transforms]
+transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
-train_dataset = [insert-code: download and transform cifar10 training data]
-test_dataset = [insert-code: download and transform cifar10 test data]
+# Downloading and transforming the MNIST dataset
+train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
-train_loader = [insert-code: create train data loader]
-test_loader = [insert-code: create test data loader]
+# Creating data loaders
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=test_batch_size, shuffle=False)
 
-# plot one example
-print(train_dataset.train_data.size())     # (60000, 28, 28)
-print(train_dataset.train_labels.size())   # (60000)
-plt.imshow(train_dataset.train_data[0].numpy(), cmap='gray')
-plt.title('%i' % train_dataset.train_labels[0])
+# Plot one example to verify the data
+print(train_dataset.data.size())  # (60000, 28, 28)
+print(train_dataset.targets.size())  # (60000)
+plt.imshow(train_dataset.data[0].numpy(), cmap='gray')
+plt.title('%i' % train_dataset.targets[0])
 plt.show()
 
 """# Step 3: Creating the Model"""
 
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-
-
-        self.rnn = [insert_code]
-        self.out = [insert_code: create the linear layer]
+class RNNModel(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, n_layers=1):
+        super(RNNModel, self).__init__()
+        # self.rnn = nn.RNN(input_size, hidden_size, n_layers, batch_first=True)
+        # self.rnn = nn.LSTM(input_size, hidden_size, n_layers, batch_first=True)
+        self.rnn = nn.GRU(input_size, hidden_size, n_layers, batch_first=True)
+        self.out = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         # x shape (batch, time_step, input_size)
-        # r_out shape (batch, time_step, output_size)
-        # h_n shape (n_layers, batch, hidden_size)
-        # h_c shape (n_layers, batch, hidden_size)
-        r_out, hidden = self.rnn(x, None)   # None represents zero initial hidden state
-
-        # choose r_out at the last time step
-        out = self.out(r_out[:, -1, :])
+        r_out, hidden = self.rnn(x, None)  # None represents zero initial hidden state
+        out = self.out(r_out[:, -1, :])  # select output at the last time step
         return out
 
-model = [insert-code]
+hidden_size = 128  # Number of nodes in the hidden layer
+output_size = 10  # Number of classes (0-9 for MNIST)
+model = RNNModel(INPUT_SIZE, hidden_size, output_size)
 
 if cuda:
     model.cuda()
 
-optimizer = [insert-code: USE AN ADAM OPTIMIZER]
+optimizer = optim.Adam(model.parameters(), lr=lr)
 
 """# Step 4: Train/Test"""
 
-# Defining the test and trainig loops
+# Defining training and testing functions
+criterion = nn.CrossEntropyLoss()
 
 def train(epoch):
     model.train()
-
-    criterion = nn.CrossEntropyLoss()
+    correct = 0
     for batch_idx, (data, target) in enumerate(train_loader):
         if cuda:
             data, target = data.cuda(), target.cuda()
 
-        data = data.view(-1, 28, 28)
+        data = data.view(-1, 28, 28)  # Reshape data for RNN (batch, time_step, input_size)
 
         optimizer.zero_grad()
-        output = model(data) # forward
+        output = model(data)
         loss = criterion(output, target)
-        
-        [insert-code: implement training loop with logging]
+        loss.backward()  # Backpropagation
+        optimizer.step()  # Optimize the weights
 
+        # Calculate accuracy for the current batch
+        pred = output.argmax(dim=1, keepdim=True)
+        correct += pred.eq(target.view_as(pred)).sum().item()
 
+        if batch_idx % logging_interval == 0:
+            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
+                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
+            writer.add_scalar('Training Loss', loss.item(), epoch * len(train_loader) + batch_idx)
+
+    accuracy = 100. * correct / len(train_loader.dataset)
+    print(f'Train Epoch: {epoch} \tAccuracy: {accuracy:.2f}%')
+    writer.add_scalar('Training Accuracy', accuracy, epoch)
 
 def test(epoch):
-    [insert-code: implement testing loop with logging]
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            if cuda:
+                data, target = data.cuda(), target.cuda()
 
-# Training loop
+            data = data.view(-1, 28, 28)  # Reshape data for RNN
+            output = model(data)
+            test_loss += criterion(output, target).item()  # Sum up batch loss
+            pred = output.argmax(dim=1, keepdim=True)  # Get the index of the max log-probability
+            correct += pred.eq(target.view_as(pred)).sum().item()
 
-[insert-code: running test and training over epoch]
+    test_loss /= len(test_loader.dataset)
+    accuracy = 100. * correct / len(test_loader.dataset)
+
+    print(f'Test set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)')
+    writer.add_scalar('Test Loss', test_loss, epoch)
+    writer.add_scalar('Test Accuracy', accuracy, epoch)
+
+"""# Step 5: Training Loop"""
+
+best_accuracy = 0
+for epoch in range(1, epochs + 1):
+    train(epoch)
+    test(epoch)
+
 writer.close()
 
 # Commented out IPython magic to ensure Python compatibility.
 """
-#https://stackoverflow.com/questions/55970686/tensorboard-not-found-as-magic-function-in-jupyter
+# https://stackoverflow.com/questions/55970686/tensorboard-not-found-as-magic-function-in-jupyter
 
-#seems to be working in firefox when not working in Google Chrome when running in Colab
-#https://stackoverflow.com/questions/64218755/getting-error-403-in-google-colab-with-tensorboard-with-firefox
-
+# seems to be working in firefox when not working in Google Chrome when running in Colab
+# https://stackoverflow.com/questions/64218755/getting-error-403-in-google-colab-with-tensorboard-with-firefox
 
 # %load_ext tensorboard
 # %tensorboard --logdir [dir]
