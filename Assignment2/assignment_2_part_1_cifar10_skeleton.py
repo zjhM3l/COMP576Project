@@ -52,6 +52,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+from torchvision.datasets import ImageFolder
 
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
@@ -61,7 +62,8 @@ from pathlib import Path
 # hyperparameters
 batch_size = 128
 epochs = 10
-lr = 0.001
+lr = 0.003
+warmup_epochs = 3  # Number of warmup epochs
 try_cuda = True
 seed = 1000
 
@@ -98,15 +100,17 @@ else:
 
 """# Step 2: Data Setup"""
 
-# downloading the cifar10 dataset
+# Transformations to apply to the data
 transform = transforms.Compose([
     transforms.Grayscale(num_output_channels=1) if grayscale else transforms.Lambda(lambda x: x),
     transforms.ToTensor(),
+    transforms.RandomHorizontalFlip(p=0.5),
     transforms.Normalize((0.5,), (0.5,))
 ])
 
-train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+# Loading the dataset from the CIFAR10 folder structure
+train_dataset = ImageFolder(root='./Assignment2/CIFAR10/Train', transform=transform)
+test_dataset = ImageFolder(root='./Assignment2/CIFAR10/Test', transform=transform)
 
 train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
@@ -126,12 +130,12 @@ check_data_loader_dim(test_loader)
 layer_1_n_filters = 32
 layer_2_n_filters = 64
 fc_1_n_nodes = 1024
-padding = "same"
 kernel_size = 5
 verbose = False
 
 # calculating the side length of the final activation maps
-final_length = 7  # After two max pooling layers, the 28x28 image becomes 7x7
+input_size = 28  
+final_length = input_size // (2 * 2)  
 
 if verbose:
     print(f"final_length = {final_length}")
@@ -161,7 +165,7 @@ class LeNet5(nn.Module):
 
         self.classifier = nn.Sequential(
             nn.Linear(final_length * final_length * layer_2_n_filters, fc_1_n_nodes),
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Linear(fc_1_n_nodes, num_classes)
         )
 
@@ -179,6 +183,9 @@ if cuda:
     model.cuda()
 
 optimizer = optim.Adam(model.parameters(), lr=lr)
+
+# Learning rate scheduler with warm-up
+scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: min(1.0, (epoch + 1) / warmup_epochs) if epoch < warmup_epochs else 1.0)
 
 """# Step 4: Train/Test Loop"""
 
@@ -199,12 +206,15 @@ def train(epoch):
 
         if batch_idx % logging_interval == 0:
             print(f"Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} "
-                  f"({100. * batch_idx / len(train_loader):.0f}%)]	Loss: {loss.item():.6f}")
+                  f"({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}")
             writer.add_scalar('Training Loss', loss.item(), epoch * len(train_loader) + batch_idx)
 
     # Log model parameters to TensorBoard at every epoch
     for name, param in model.named_parameters():
         writer.add_histogram(name, param, epoch)
+
+    # Step the learning rate scheduler
+    scheduler.step()
 
 
 def test(epoch):
@@ -225,17 +235,64 @@ def test(epoch):
     test_loss /= len(test_loader.dataset)
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print(f"Test set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.0f}%)")
+    print(f"Test set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)")
 
     writer.add_scalar('Test Loss', test_loss, epoch)
     writer.add_scalar('Test Accuracy', accuracy, epoch)
 
+    return accuracy
+
 # Running test and training over epochs
+best_accuracy = 0
 for epoch in range(1, epochs + 1):
     train(epoch)
-    test(epoch)
+    accuracy = test(epoch)
+    if accuracy > best_accuracy:
+        best_accuracy = accuracy
+        torch.save(model.state_dict(), "best_model.pth")
 
 writer.close()
+
+# Step 5: Visualization and Statistics
+
+# Visualize the filters of the first convolutional layer
+first_conv_layer = model.features[0]
+filters = first_conv_layer.weight.data.cpu().numpy()
+
+fig, axes = plt.subplots(4, 8, figsize=(12, 6))
+for i, ax in enumerate(axes.flat):
+    if i < filters.shape[0]:
+        ax.imshow(filters[i, 0, :, :], cmap='gray')
+        ax.axis('off')
+plt.suptitle('Filters of the First Convolutional Layer')
+plt.show()
+
+# Visualize the activations of the first convolutional layer for a batch of test images
+data_iter = iter(test_loader)
+images, labels = next(data_iter)
+if cuda:
+    images = images.cuda()
+
+with torch.no_grad():
+    activations = model.features[0](images).cpu().numpy()
+
+fig, axes = plt.subplots(4, 8, figsize=(12, 6))
+for i, ax in enumerate(axes.flat):
+    if i < activations.shape[0]:
+        ax.imshow(activations[i, 0, :, :], cmap='gray')
+        ax.axis('off')
+plt.suptitle('Activations of the First Convolutional Layer')
+plt.show()
+
+# Statistics for activations (mean and standard deviation)
+activation_means = activations.mean(axis=(0, 2, 3))
+activation_stds = activations.std(axis=(0, 2, 3))
+
+print("Activation Means:", activation_means)
+print("Activation Standard Deviations:", activation_stds)
+
+# Final Model Accuracy
+print(f"Best Test Accuracy: {best_accuracy:.2f}%")
 
 
 # Commented out IPython magic to ensure Python compatibility.
